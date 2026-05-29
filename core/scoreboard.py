@@ -22,6 +22,7 @@ from PyQt6.QtWidgets import (
 )
 
 from config import UI, Game, Resources, Styles, get_resource_path
+from core.game_state import GameState
 from utils import enable_win_blur, GlobalHotkey, HSpacerAnimator
 from widgets import ClickableSvg, BadgeGhost, ScoreboardOverlay
 
@@ -78,38 +79,22 @@ class SnookerScoreboard(QWidget):
         self.update_remaining_display()
 
     def _init_game_state(self):
-        """Initialize all game state variables."""
-        self.frame_high_break_p1 = 0
-        self.frame_high_break_p2 = 0
-        self.is100 = False
+        """Initialize all game state variables.
+
+        The numeric match/frame state lives on :class:`GameState`; the old
+        attribute names remain available as property proxies (see the bottom of
+        this module), so the UI code can keep using ``self.score_p1`` etc.
+        """
+        self.game = GameState()
+
+        # UI-only state (cooldowns, widget registries, animation bookkeeping)
         self.switch_cooldown = False
         self.ball_cooldown = False
-        self.in_black_ball_decider = False
         self.score_cooldowns = {}
-        self.frame_scores_p1 = []
-        self.frame_scores_p2 = []
-        self.break_scores_p1 = []
-        self.break_scores_p2 = []
         self.p1_break_slots = {}
         self.p2_break_slots = {}
-
-        self.score_p1 = 0
-        self.score_p2 = 0
-        self.break_p1 = 0
-        self.break_p2 = 0
-        self.frame_score_p1 = 0
-        self.frame_score_p2 = 0
-        self.highest_break_p1 = 0
-        self.highest_break_p2 = 0
-        self.match_high_break_start_p1 = 0
-        self.match_high_break_start_p2 = 0
         self.break_push_extra = 0
         self.total_push_extra = 0
-
-        self.red_remaining = Game.INITIAL_REDS
-        self.colors_remaining = {2: 1, 3: 1, 4: 1, 5: 1, 6: 1, 7: 1}
-        self.action_stack = []
-        self.just_potted_last_red = False
         self.buttons = []
         self.ball_buttons = []
 
@@ -735,21 +720,14 @@ class SnookerScoreboard(QWidget):
 
     def _compute_next_break_player(self) -> int:
         """Compute who should break in the next frame."""
-        finished_frames = len(self.frame_scores_p1)
-        if finished_frames % 2 == 0:
-            return self.first_break_player
-        return 2 if self.first_break_player == 1 else 1
+        return self.game.compute_next_break_player()
 
     def update_remaining_display(self):
         """Update remaining points and ahead display."""
-        if self.red_remaining > 0:
-            points = self.red_remaining * 8 + sum(k * v for k, v in self.colors_remaining.items())
-        else:
-            points = sum(k * v for k, v in self.colors_remaining.items())
+        points = self.game.remaining_points()
 
-        diff = self.score_p1 - self.score_p2
-        lead = abs(diff)
-        ahead_text = f"Ahead: {lead}" if diff != 0 else "Ahead: 0"
+        lead = self.game.lead()
+        ahead_text = f"Ahead: {lead}"
 
         self.label_ahead.setText(ahead_text)
         self.label_remaining.setText(f"Remaining: {points}")
@@ -783,18 +761,11 @@ class SnookerScoreboard(QWidget):
         self.label_break_p2.setText(f"Break: {self.break_p2}")
         self.label_break_p2.setAlignment(Qt.AlignmentFlag.AlignRight)
 
-        # Update highest break
+        # Update highest break (recorded in the model, displayed here)
+        self.game.record_high_breaks()
         if self.current_player == 1:
-            if self.break_p1 > self.frame_high_break_p1:
-                self.frame_high_break_p1 = self.break_p1
-            if self.break_p1 > self.highest_break_p1:
-                self.highest_break_p1 = self.break_p1
             self.label_high_break_p1.setText(f"Highest: {self.highest_break_p1}")
         else:
-            if self.break_p2 > self.frame_high_break_p2:
-                self.frame_high_break_p2 = self.break_p2
-            if self.break_p2 > self.highest_break_p2:
-                self.highest_break_p2 = self.break_p2
             self.label_high_break_p2.setText(f"Highest: {self.highest_break_p2}")
 
     # ==================== Ball Stats ====================
@@ -934,63 +905,27 @@ class SnookerScoreboard(QWidget):
         self.ball_cooldown = True
         QTimer.singleShot(UI.BALL_COOLDOWN, lambda: setattr(self, "ball_cooldown", False))
 
-        if self.in_black_ball_decider and value != 7:
+        player = self.current_player
+        outcome = self.game.apply_pot(value)
+        if not outcome.potted:
             return
 
-        # Check if ball can be potted
-        if value == 1 and self.red_remaining == 0:
-            return
-        if (value != 1 and self.red_remaining == 0 and not self.just_potted_last_red
-                and value in self.colors_remaining and self.colors_remaining[value] == 0):
-            return
-
-        # Save action for undo
-        self.action_stack.append((
-            "pot", value, self.current_player, self.red_remaining,
-            dict(self.colors_remaining), self.just_potted_last_red,
-            self.highest_break_p1, self.highest_break_p2, self.is100,
-        ))
-
-        # Add score
-        if self.current_player == 1:
-            self.score_p1 += value
-            self.break_p1 += value
-        else:
-            self.score_p2 += value
-            self.break_p2 += value
-
-        # Update ball remaining
+        # Update ball remaining labels
         if value == 1:
-            if self.red_remaining > 0:
-                self.red_remaining -= 1
-                if self.red_remaining == 0:
-                    self.just_potted_last_red = True
-            self.ball_remaining_labels[1].setText(str(self.red_remaining))
-        elif self.red_remaining == 0 and value in self.colors_remaining:
-            if self.just_potted_last_red:
-                self.just_potted_last_red = False
-            elif value in self.colors_remaining and self.colors_remaining[value] > 0:
-                self.colors_remaining[value] -= 1
-            self.ball_remaining_labels[value].setText(str(self.colors_remaining[value]))
+            self.ball_remaining_labels[1].setText(str(outcome.red_after))
+        elif outcome.red_after == 0 and value in self.colors_remaining:
+            self.ball_remaining_labels[value].setText(str(outcome.color_after))
 
         self.update_scores()
         self.update_ball_stats(value)
-        self.update_total_ball_stats(self.current_player, value)
+        self.update_total_ball_stats(player, value)
         self.update_remaining_display()
 
-        # Check for black ball decider
-        if (not self.in_black_ball_decider and self.red_remaining == 0
-                and all(v == 0 for v in self.colors_remaining.values())):
-            if self.score_p1 == self.score_p2:
-                self.in_black_ball_decider = True
-                self.colors_remaining[7] = 1
-                QMessageBox.information(self, "争黑球", "双方分数相同，进入争黑球阶段！只能击打黑球。")
+        if outcome.decider_triggered:
+            QMessageBox.information(self, "争黑球", "双方分数相同，进入争黑球阶段！只能击打黑球。")
 
-        # Check for century
-        current_break = self.break_p1 if self.current_player == 1 else self.break_p2
-        if current_break >= Game.CENTURY_BREAK and not self.is100:
+        if outcome.century_triggered:
             self.show_century_animation()
-            self.is100 = True
 
     def add_manual_score(self, value):
         """Add manual score without affecting ball count."""
@@ -1000,43 +935,21 @@ class SnookerScoreboard(QWidget):
         self.ball_cooldown = True
         QTimer.singleShot(UI.MANUAL_SCORE_COOLDOWN, lambda: setattr(self, "ball_cooldown", False))
 
-        self.action_stack.append((
-            "manual", value, self.current_player,
-            self.highest_break_p1, self.highest_break_p2,
-        ))
-
-        if self.current_player == 1:
-            self.score_p1 += value
-            self.break_p1 += value
-        else:
-            self.score_p2 += value
-            self.break_p2 += value
+        player = self.current_player
+        outcome = self.game.apply_manual(value)
 
         self.update_scores()
         self.update_ball_stats(value)
-        self.update_total_ball_stats(self.current_player, value)
+        self.update_total_ball_stats(player, value)
 
-        current_break = self.break_p1 if self.current_player == 1 else self.break_p2
-        if current_break >= Game.CENTURY_BREAK and not self.is100:
+        if outcome.century_triggered:
             self.show_century_animation()
-            self.is100 = True
 
     def add_foul(self, value):
         """Add foul points to opponent."""
         snap_p1, snap_p2 = self.snapshot_break_stats()
-
-        if self.current_player == 1:
-            prev_break = self.break_p1
-            self.action_stack.append(("foul", value, self.current_player, prev_break, snap_p1, snap_p2))
-            self.score_p2 += value
-            self.break_p1 = 0
-            self.clear_break_stats_for_player(1)
-        else:
-            prev_break = self.break_p2
-            self.action_stack.append(("foul", value, self.current_player, prev_break, snap_p1, snap_p2))
-            self.score_p1 += value
-            self.break_p2 = 0
-            self.clear_break_stats_for_player(2)
+        offender = self.game.apply_foul(value, snap_p1, snap_p2)
+        self.clear_break_stats_for_player(offender)
 
         self.update_scores()
         self.update_remaining_display()
@@ -1180,25 +1093,10 @@ class SnookerScoreboard(QWidget):
         self.switch_cooldown = True
         QTimer.singleShot(UI.SWITCH_COOLDOWN, lambda: setattr(self, "switch_cooldown", False))
 
-        prev_player = self.current_player
-        prev_break_p1 = self.break_p1
-        prev_break_p2 = self.break_p2
         snap_p1, snap_p2 = self.snapshot_break_stats()
+        prev_player, direction = self.game.apply_switch(snap_p1, snap_p2)
 
-        self.action_stack.append(("switch", prev_player, prev_break_p1, prev_break_p2, snap_p1, snap_p2))
-
-        if self.red_remaining == 0:
-            self.just_potted_last_red = False
-
-        self.current_player = 2 if self.current_player == 1 else 1
-
-        if self.current_player == 1:
-            self.break_p2 = 0
-            self.play_switch_arrow_animation("right_to_left")
-        else:
-            self.break_p1 = 0
-            self.play_switch_arrow_animation("left_to_right")
-
+        self.play_switch_arrow_animation(direction)
         self.clear_break_stats_for_player(prev_player)
         self.update_scores()
 
@@ -1206,47 +1104,24 @@ class SnookerScoreboard(QWidget):
 
     def reset_scores(self):
         """End current frame and reset for next frame."""
-        self.in_black_ball_decider = False
-        updated = False
-        winning_score = self.total_frames // 2 + 1
+        score_updated = self.game.end_frame()
 
-        if self.score_p1 > self.score_p2:
-            self.frame_score_p1 += 1
-            self.frame_scores_p1.append(self.score_p1)
-            self.frame_scores_p2.append(self.score_p2)
-            updated = True
-        elif self.score_p2 > self.score_p1:
-            self.frame_score_p2 += 1
-            self.frame_scores_p1.append(self.score_p1)
-            self.frame_scores_p2.append(self.score_p2)
-            updated = True
-
-        if updated:
+        if score_updated:
             self.update_scores()
-
-        self.break_scores_p1.append(self.frame_high_break_p1)
-        self.break_scores_p2.append(self.frame_high_break_p2)
 
         self._reset_frame_state()
 
-        if self.frame_score_p1 >= winning_score:
+        winner = self.game.winner()
+        if winner == 1:
             QMessageBox.information(self, "比赛结束", f"{self.name_input_p1.text()} 获胜！")
             self.disable_buttons_except_reset()
-        elif self.frame_score_p2 >= winning_score:
+        elif winner == 2:
             QMessageBox.information(self, "比赛结束", f"{self.name_input_p2.text()} 获胜！")
             self.disable_buttons_except_reset()
 
     def _reset_frame_state(self):
-        """Reset state for a new frame."""
-        self.frame_high_break_p1 = 0
-        self.frame_high_break_p2 = 0
-        self.score_p1 = 0
-        self.score_p2 = 0
-        self.break_p1 = 0
-        self.break_p2 = 0
-        self.is100 = False
-        self.red_remaining = Game.INITIAL_REDS
-        self.colors_remaining = {2: 1, 3: 1, 4: 1, 5: 1, 6: 1, 7: 1}
+        """Reset state for a new frame (UI side; numeric reset in GameState)."""
+        self.game.reset_frame()
 
         self.clear_total_stats_both()
         for stats in [self.p1_ball_stats, self.p2_ball_stats]:
@@ -1254,7 +1129,6 @@ class SnookerScoreboard(QWidget):
                 label.setText("")
                 label.hide()
 
-        self.action_stack.clear()
         self.update_scores()
         self.update_remaining_display()
 
@@ -1264,11 +1138,6 @@ class SnookerScoreboard(QWidget):
             self.ball_remaining_labels[color_val].setText(str(remaining))
             self.ball_remaining_labels[color_val].setVisible(remaining > 0)
 
-        self.match_high_break_start_p1 = self.highest_break_p1
-        self.match_high_break_start_p2 = self.highest_break_p2
-
-        self.current_frame_break_player = self._compute_next_break_player()
-        self.current_player = self.current_frame_break_player
         self.update_arrow()
 
     def rerack_frame(self):
@@ -1281,17 +1150,7 @@ class SnookerScoreboard(QWidget):
         if reply != QMessageBox.StandardButton.Yes:
             return
 
-        self.in_black_ball_decider = False
-        self.just_potted_last_red = False
-        self.is100 = False
-        self.score_p1 = 0
-        self.score_p2 = 0
-        self.break_p1 = 0
-        self.break_p2 = 0
-        self.frame_high_break_p1 = 0
-        self.frame_high_break_p2 = 0
-        self.red_remaining = Game.INITIAL_REDS
-        self.colors_remaining = {2: 1, 3: 1, 4: 1, 5: 1, 6: 1, 7: 1}
+        self.game.rerack()
 
         for stats in [self.p1_ball_stats, self.p2_ball_stats]:
             for label in stats.values():
@@ -1304,18 +1163,14 @@ class SnookerScoreboard(QWidget):
             self.ball_remaining_labels[color_val].setText(str(remaining))
             self.ball_remaining_labels[color_val].setVisible(True)
 
-        self.action_stack.clear()
         self.update_arrow()
         self.update_scores()
         self.update_remaining_display()
 
-        self.highest_break_p1 = self.match_high_break_start_p1
-        self.highest_break_p2 = self.match_high_break_start_p2
         self.label_high_break_p1.setText(f"Highest: {self.highest_break_p1}")
         self.label_high_break_p2.setText(f"Highest: {self.highest_break_p2}")
 
         self.clear_total_stats_both()
-        self.current_player = self.current_frame_break_player
         self.update_arrow()
 
     def full_reset(self):
@@ -1339,9 +1194,7 @@ class SnookerScoreboard(QWidget):
 
     def remove_red_ball(self):
         """Manually remove a red ball."""
-        if self.red_remaining > 0:
-            self.action_stack.append(("red_minus", self.red_remaining))
-            self.red_remaining -= 1
+        if self.game.apply_remove_red():
             self.update_remaining_display()
             self.ball_remaining_labels[1].setText(str(self.red_remaining))
 
@@ -2271,3 +2124,62 @@ class SnookerScoreboard(QWidget):
             self.overlay.close()
 
         super().closeEvent(event)
+
+
+# ============================================================================
+# Game-state property proxies
+#
+# The numeric match/frame state now lives on ``self.game`` (a GameState). To
+# avoid touching the large body of UI code, the legacy attribute names are
+# exposed here as properties that read/write through ``self.game``. Reading or
+# assigning e.g. ``self.score_p1`` transparently maps to ``self.game.p1.score``;
+# mutable containers (colors_remaining, the score lists, action_stack) are
+# returned by reference so in-place mutation still works.
+# ============================================================================
+
+# (legacy attribute name, player id, PlayerState field)
+_PLAYER_PROXY_FIELDS = [
+    ("score_p1", 1, "score"), ("score_p2", 2, "score"),
+    ("break_p1", 1, "break_score"), ("break_p2", 2, "break_score"),
+    ("frame_high_break_p1", 1, "frame_high_break"), ("frame_high_break_p2", 2, "frame_high_break"),
+    ("highest_break_p1", 1, "highest_break"), ("highest_break_p2", 2, "highest_break"),
+    ("match_high_break_start_p1", 1, "match_high_break_start"),
+    ("match_high_break_start_p2", 2, "match_high_break_start"),
+    ("frame_score_p1", 1, "frame_score"), ("frame_score_p2", 2, "frame_score"),
+    ("frame_scores_p1", 1, "frame_scores"), ("frame_scores_p2", 2, "frame_scores"),
+    ("break_scores_p1", 1, "break_scores"), ("break_scores_p2", 2, "break_scores"),
+]
+
+# legacy attribute names that map straight onto GameState attributes
+_SHARED_PROXY_FIELDS = [
+    "red_remaining", "colors_remaining", "just_potted_last_red",
+    "in_black_ball_decider", "is100", "current_player", "total_frames",
+    "first_break_player", "current_frame_break_player", "action_stack",
+]
+
+
+def _make_player_proxy(pid, attr):
+    def getter(self):
+        return getattr(self.game.player(pid), attr)
+
+    def setter(self, value):
+        setattr(self.game.player(pid), attr, value)
+
+    return property(getter, setter)
+
+
+def _make_shared_proxy(attr):
+    def getter(self):
+        return getattr(self.game, attr)
+
+    def setter(self, value):
+        setattr(self.game, attr, value)
+
+    return property(getter, setter)
+
+
+for _name, _pid, _attr in _PLAYER_PROXY_FIELDS:
+    setattr(SnookerScoreboard, _name, _make_player_proxy(_pid, _attr))
+
+for _attr in _SHARED_PROXY_FIELDS:
+    setattr(SnookerScoreboard, _attr, _make_shared_proxy(_attr))
