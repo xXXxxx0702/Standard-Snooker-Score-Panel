@@ -1,6 +1,6 @@
 {
     "env": {
-        "HTTP_PROXY": "http://127.0.0.1:10090",
-        "HTTPS_PROXY": "http://127.0.0.1:10090"
+        "HTTP_PROXY": "http://127.0.0.1:7892",
+        "HTTPS_PROXY": "http://127.0.0.1:7892"
     }
 }

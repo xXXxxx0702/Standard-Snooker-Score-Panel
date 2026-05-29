@@ -8,13 +8,21 @@ import sys
 # ==============================
 # Path Utilities
 # ==============================
-def get_resource_path(filename: str) -> str:
-    """Get absolute path to resource, works for dev and PyInstaller."""
+def _base_path() -> str:
+    """Base directory for bundled assets (handles PyInstaller one-file)."""
     if getattr(sys, 'frozen', False):
-        base_path = sys._MEIPASS
-    else:
-        base_path = os.path.dirname(os.path.abspath(__file__))
-    return os.path.join(base_path, 'resources', filename)
+        return sys._MEIPASS
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+def get_resource_path(filename: str) -> str:
+    """Get absolute path to a resource, works for dev and PyInstaller."""
+    return os.path.join(_base_path(), 'resources', filename)
+
+
+def get_flag_path(filename: str) -> str:
+    """Get absolute path to a flag SVG, works for dev and PyInstaller."""
+    return os.path.join(_base_path(), 'resources', 'flag_svg', filename)
 
 
 # ==============================

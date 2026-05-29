@@ -21,7 +21,7 @@ from PyQt6.QtWidgets import (
     QTableWidget, QTableWidgetItem, QGridLayout,
 )
 
-from config import UI, Game, Resources, Styles, get_resource_path
+from config import UI, Game, Resources, Styles, get_resource_path, get_flag_path
 from core.game_state import GameState
 from utils import enable_win_blur, GlobalHotkey, HSpacerAnimator
 from widgets import ClickableSvg, BadgeGhost, ScoreboardOverlay
@@ -248,13 +248,13 @@ class SnookerScoreboard(QWidget):
     def _create_flag_widgets(self):
         """Create flag selection widgets."""
         self.flag_p1 = ClickableSvg()
-        flag_p1_path = get_resource_path(Resources.FLAG_P1_DEFAULT)
+        flag_p1_path = get_flag_path(Resources.FLAG_P1_DEFAULT)
         if os.path.exists(flag_p1_path):
             self.flag_p1.load(flag_p1_path)
         self.flag_p1.clicked.connect(lambda: self.change_flag(1))
 
         self.flag_p2 = ClickableSvg()
-        flag_p2_path = get_resource_path(Resources.FLAG_P2_DEFAULT)
+        flag_p2_path = get_flag_path(Resources.FLAG_P2_DEFAULT)
         if os.path.exists(flag_p2_path):
             self.flag_p2.load(flag_p2_path)
         self.flag_p2.clicked.connect(lambda: self.change_flag(2))
@@ -1202,8 +1202,9 @@ class SnookerScoreboard(QWidget):
 
     def change_flag(self, player_id):
         """Change player flag."""
+        start_dir = get_flag_path("")
         file_name, _ = QFileDialog.getOpenFileName(
-            self, "选择国旗图像", ".", "Images (*.svg)"
+            self, "选择国旗图像", start_dir, "Images (*.svg)"
         )
         if file_name:
             if player_id == 1:
@@ -1766,8 +1767,8 @@ class SnookerScoreboard(QWidget):
             "meta": {"version": 1, "saved_at": ts},
             "names": [self.name_input_p1.text(), self.name_input_p2.text()],
             "flags": [
-                getattr(self, "flag_p1_path", get_resource_path(Resources.FLAG_P1_DEFAULT)),
-                getattr(self, "flag_p2_path", get_resource_path(Resources.FLAG_P2_DEFAULT)),
+                getattr(self, "flag_p1_path", get_flag_path(Resources.FLAG_P1_DEFAULT)),
+                getattr(self, "flag_p2_path", get_flag_path(Resources.FLAG_P2_DEFAULT)),
             ],
             "overlay_pos": [
                 self.overlay.x() if hasattr(self, "overlay") else 100,
@@ -1864,9 +1865,9 @@ class SnookerScoreboard(QWidget):
         self.name_input_p1.setText(str(names[0]) if len(names) > 0 else "Player 1")
         self.name_input_p2.setText(str(names[1]) if len(names) > 1 else "Player 2")
 
-        flags = state.get("flags", [get_resource_path(Resources.FLAG_P1_DEFAULT), get_resource_path(Resources.FLAG_P2_DEFAULT)])
-        f1 = flags[0] if len(flags) > 0 else get_resource_path(Resources.FLAG_P1_DEFAULT)
-        f2 = flags[1] if len(flags) > 1 else get_resource_path(Resources.FLAG_P2_DEFAULT)
+        flags = state.get("flags", [get_flag_path(Resources.FLAG_P1_DEFAULT), get_flag_path(Resources.FLAG_P2_DEFAULT)])
+        f1 = flags[0] if len(flags) > 0 else get_flag_path(Resources.FLAG_P1_DEFAULT)
+        f2 = flags[1] if len(flags) > 1 else get_flag_path(Resources.FLAG_P2_DEFAULT)
 
         if isinstance(f1, str) and os.path.exists(f1):
             self.flag_p1.load(f1)
